@@ -1,14 +1,22 @@
 package br.com.fiap.microservices.pedido.service;
 
+import br.com.fiap.microservices.pedido.dto.ClienteDTO;
 import br.com.fiap.microservices.pedido.dto.CriarPedidoDTO;
+import br.com.fiap.microservices.pedido.dto.ProdutoDTO;
 import br.com.fiap.microservices.pedido.feign.CatalogoFeignClient;
 import br.com.fiap.microservices.pedido.feign.ClienteFeignClient;
+import br.com.fiap.microservices.pedido.model.ItemPedido;
 import br.com.fiap.microservices.pedido.model.Pedido;
 import br.com.fiap.microservices.pedido.repository.PedidoRepository;
 import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 public class PedidoService {
@@ -30,12 +38,70 @@ public class PedidoService {
         logger.info("Criando novo pedido para cliente ID: {}", dto.clienteId());
 
         //1. Validarr se o cliente existe (ClienteFeignClient)
+        try{
+        ClienteDTO cliente = clienteFeignClient.buscarClientePorId(dto.clienteId());
+            logger.info("Cliente encontrado: {}", cliente.nome());
+        } catch (Exception e) {
+            logger.error("Erro ao buscar Cliente com ID {}", dto.clienteId(), e);
+            throw new RuntimeException("Cliente não encontrado com o ID: " + dto.clienteId());
+        }
+
         //2. Processar os itens do pedido (CataloogFeignClient)
-        //3. Validar estoque
-        //4. Criar item do pedido com preço do catálogo
-        //5. Calcular o valor total
+        BigDecimal valorTotal = BigDecimal.ZERO;
+        List<ItemPedido> itensProcessados = new ArrayList<>();
+
+        for (ItemPedido item : dto.itens()){
+            logger.info("Processando item - Produto ID: {}, Quantidade: {}", item.getProdutoId(), item.getQuantidade());
+            try{
+                ProdutoDTO produto = catalogoFeignClient.buscarProdutoPorId(item.getProdutoId());
+                logger.info("Produto encontrado: {} - Estoque: {}", produto.nome(), produto.estoque());
+                //3. Validar estoque
+                if (produto.estoque() < item.getQuantidade()){
+                    logger.error("Estoque insuficiente para produto: {}", produto.nome());
+                    throw new RuntimeException("Estoque insuficiente para produto: " + produto.nome()
+                            +". Disponível: "
+                            + produto.estoque() +". Solicitado: " + item.getQuantidade());
+                }
+                //4. Criar item do pedido com preço do catálogo
+                ItemPedido itemProcessado = new ItemPedido();
+                itemProcessado.setProdutoId(item.getProdutoId());
+                itemProcessado.setQuantidade(itemProcessado.getQuantidade());
+                itemProcessado.setPreco(itemProcessado.getPreco());
+                itensProcessados.add(itemProcessado);
+                //5. Acumular o valor total
+                BigDecimal subtotal = item.calcularSubtotal();
+                valorTotal = valorTotal.add(subtotal);
+                logger.info("Subtotal do item: {}", item.calcularSubtotal());
+            } catch (Exception e){
+                logger.error("Erro ao buscar Produto com ID {}", item.getProdutoId(), e);
+                throw new RuntimeException("Cliente não encontrado com o ID: " + item.getProdutoId());
+            }
+        }
+
         //6. Criar e persistir o pedido
+        Pedido pedido = new Pedido();
+        pedido.setClienteId(dto.clienteId());
+        pedido.setStatus("PENDENTE");
+        pedido.setValorTotal(valorTotal);
+        pedido.setItens(itensProcessados);
+        pedido.setDataPedido(LocalDateTime.now());
+
+        Pedido pedidoSalvo = pedidoRepository.save(pedido);
+        logger.info("Pedido criado com ID: {} - Valor total: {}", pedidoSalvo.getId(), pedidoSalvo.getValorTotal());
+
         //7. Retornar o Pedido populado com os dados do cliente e dos produtos
-        return null;
+        return pedidoSalvo;
+    }
+
+    public Pedido buscarPorId(Long id){
+        return pedidoRepository.findById(id).orElseThrow(() -> new RuntimeException("Pedido não encontrado com ID: " + id));
+    }
+
+    public List<Pedido> listarTodos() {
+        return pedidoRepository.findAll();
+    }
+
+    public List<Pedido> listarPorCliente(Long clienteId) {
+        return pedidoRepository.findByClienteId(clienteId);
     }
 }
